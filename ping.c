@@ -99,8 +99,12 @@ static void* ping_thread_proc(void *argv)
             bytes = recvfrom(ping->socket, (char*)ping->recvbuf, sizeof(ping->recvbuf), 0, (struct sockaddr*)&srcaddr, &addrlen);
             if (bytes > 0) {
                 ICMPPKT   *pkt = (ICMPPKT*)(ping->recvbuf + 20);
-                ping->tickrecv = get_tick_count();
-                if (ping->callback) ping->callback(ping->cbctxt, inet_ntoa(srcaddr.sin_addr), bytes, ping->recvbuf[8], (int32_t)ping->tickrecv - (int32_t)pkt->data, pkt->seq);
+                if (pkt->type == 0 && pkt->code == 0) {
+                    ping->tickrecv = get_tick_count();
+                    if (ping->callback) {
+                        ping->callback(ping->cbctxt, inet_ntoa(srcaddr.sin_addr), bytes, ping->recvbuf[8], (int32_t)ping->tickrecv - (int32_t)pkt->data, pkt->seq);
+                    }
+                }
             }
         } else {
             ping->ticksend = 0;
