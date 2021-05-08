@@ -51,6 +51,8 @@ typedef struct {
     uint32_t           flags;
     uint32_t           ticksend;
     uint32_t           tickrecv;
+    int32_t            interval;
+    int32_t            timeout;
     pthread_t          pthread;
     ICMPPKT            icmppkt;
     uint8_t            recvbuf[256];
@@ -79,11 +81,11 @@ static void* ping_thread_proc(void *argv)
     if (!argv) return NULL;
     while (!(ping->flags & FLAG_EXIT)) {
         if (ping->flags & FLAG_START) {
-            struct sockaddr_in srcaddr = {0};
+            struct sockaddr_in srcaddr;
             uint32_t  tickcur = get_tick_count();
             socklen_t addrlen = sizeof(srcaddr);
-            int32_t   ret;
-            if (ping->ticksend == 0 || (int32_t)tickcur - (int32_t)ping->ticksend >= 1000) {
+            int32_t   bytes;
+            if (ping->ticksend == 0 || (int32_t)tickcur - (int32_t)ping->ticksend >= ping->interval) {
                 ping->icmppkt.seq++;
                 ping->icmppkt.checksum = 0;
                 ping->icmppkt.type     = 8;
@@ -91,14 +93,14 @@ static void* ping_thread_proc(void *argv)
 //              ping->icmppkt.id       = getpid();
                 ping->icmppkt.checksum = checksum((uint8_t*)&ping->icmppkt, sizeof(ping->icmppkt));
                 sendto(ping->socket, (char*)&ping->icmppkt, sizeof(ping->icmppkt), 0, (struct sockaddr*)&ping->dstaddr, sizeof(ping->dstaddr));
-                ping->ticksend += ping->ticksend ? 1000 : tickcur;
+                ping->ticksend += ping->ticksend ? ping->interval : tickcur;
 //              printf("socket: %d, send icmp packet, seq: %d, checksum: %04X\n", ping->socket, ping->icmppkt.seq, ping->icmppkt.checksum); fflush(stdout);
             }
-            ret = recvfrom(ping->socket, (char*)ping->recvbuf, sizeof(ping->recvbuf), 0, (struct sockaddr*)&srcaddr, &addrlen);
-            if (ret > 0) {
-                ICMPPKT *pkt = (ICMPPKT*)(ping->recvbuf + 20);
-                int bytes = ret, ttl = ping->recvbuf[8], time = (int32_t)get_tick_count() - (int32_t)pkt->data, seq = pkt->seq;
-                if (ping->callback) ping->callback(ping->cbctxt, inet_ntoa(srcaddr.sin_addr), bytes, ttl, time, seq);
+            bytes = recvfrom(ping->socket, (char*)ping->recvbuf, sizeof(ping->recvbuf), 0, (struct sockaddr*)&srcaddr, &addrlen);
+            if (bytes > 0) {
+                ICMPPKT   *pkt = (ICMPPKT*)(ping->recvbuf + 20);
+                ping->tickrecv = get_tick_count();
+                if (ping->callback) ping->callback(ping->cbctxt, inet_ntoa(srcaddr.sin_addr), bytes, ping->recvbuf[8], (int32_t)ping->tickrecv - (int32_t)pkt->data, pkt->seq);
             }
         } else {
             ping->ticksend = 0;
@@ -108,7 +110,7 @@ static void* ping_thread_proc(void *argv)
     return NULL;
 }
 
-void* ping_init(PFN_PING_CALLBACK callback, void *cbctx)
+void* ping_init(int interval, int timeout, PFN_PING_CALLBACK callback, void *cbctx)
 {
 #ifdef WIN32
     WSADATA wsaData;
@@ -127,6 +129,8 @@ void* ping_init(PFN_PING_CALLBACK callback, void *cbctx)
 
     ping = calloc(1, sizeof(PING));
     if (!ping) return NULL;
+    ping->interval = interval;
+    ping->timeout  = timeout ;
     ping->callback = callback;
     ping->cbctxt   = cbctx;
     ping->socket   = socket(PF_INET, SOCK_RAW, IPPROTO_ICMP);
@@ -167,7 +171,7 @@ void ping_run(void *ctx, char *ip, int start)
 int ping_isok(void *ctx)
 {
     PING *ping = (PING*)ctx;
-    return (ping && ping->tickrecv && (int32_t)get_tick_count() - (int32_t)ping->tickrecv > 2000);
+    return (ping && ping->tickrecv && (int32_t)get_tick_count() - (int32_t)ping->tickrecv < ping->timeout);
 }
 
 #ifdef _TEST_
@@ -178,7 +182,7 @@ static void ping_callback(void *cbctx, char *ip, int bytes, int ttl, int time, i
 
 int main(void)
 {
-    PING *ping = ping_init(ping_callback, NULL);
+    PING *ping = ping_init(1000, 2000, ping_callback, NULL);
     while (1) {
         char cmd[256], ip[256];
         scanf("%256s", cmd);
@@ -188,7 +192,7 @@ int main(void)
         } else if (strcmp(cmd, "stop") == 0) {
             ping_run(ping, NULL, 0);
         } else if (strcmp(cmd, "isok") == 0) {
-            printf("%d\n", ping_isok(ping));
+            printf("%d\n", ping_isok(ping)); fflush(stdout);
         } else if (strcmp(cmd, "exit") == 0 || strcmp(cmd, "quit") == 0) {
             break;
         }
